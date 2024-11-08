@@ -1,0 +1,5 @@
+adafruit-circuitpython-ads1x15
+Adafruit-Blinka
+pynau7802
+numpy
+RPi.GPIO
