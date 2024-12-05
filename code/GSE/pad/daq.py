@@ -4,9 +4,6 @@ from datetime import datetime
 from threading import Thread, Event, Lock
 from queue import Queue
 import numpy as np
-import adafruit_ads1x15.ads1115 as ADS
-from adafruit_ads1x15.ads1115 import Mode
-from adafruit_ads1x15.analog_in import AnalogIn
 
 class DAQController():
     def __init__(self):
@@ -21,11 +18,11 @@ class DAQController():
         self.cals = {}
 
         try:
-            with open('cals.json', 'r') as f: # pleaaase fix this!!!!
+            with open('cals.json', 'r') as f:
                 contents = loads(f.read())
 
                 if 'loadcell' in contents and 'zero' in contents['loadcell'] and 'cal' in contents['loadcell']:
-                    self.cals['loadcell'] = contents['loadcell'] # Maybe don't save loadcell calibration values
+                    self.cals['loadcell'] = contents['loadcell']
                 else:
                     self.cals['loadcell'] = {'zero': 1.0, 'cal': 1.0}
 
@@ -35,34 +32,34 @@ class DAQController():
                     self.cals['pressuretap'] = {'zero': 1400.0, 'cal': 1.0}
         except FileNotFoundError:
 
-            self.cals['loadcell'] = {'zero': 1.0, 'cal': 1.0} #this maybe saves on restart... bad
+            self.cals['loadcell'] = {'zero': 1.0, 'cal': 1.0}
             self.cals['pressuretap'] = {'zero': 1400.0, 'cal': 1.0}
             pass
 
         with open('cals.json', 'w') as f:
             f.write(dumps(self.cals))
 
-        # Pressure tap initialization
-        self.i2c = busio.I2C(board.SCL, board.SDA)
-        self.ads = ADS.ADS1015(self.i2c)
-        # Continuous mode stops conversions for some reason
-        # ads.mode = Mode.CONTINUOUS
-        self.ads.rate = 860
-        self.chan = AnalogIn(self.ads, ADS.P0, ADS.P1)
+        # Initialize NAU7802 for load cell (I2C bus 1)
+        self.bus_lc = smbus2.SMBus(1)  # I2C-1 for load cell
+        self.lc = PyNAU7802.NAU7802()
+
+        if not self.lc.begin(self.bus_lc):
+            raise RuntimeError("Failed to initialize NAU7802 for load cell!")
             
-        #BEGIN LOAD CELL STUIFF
         # Load cell initialiation
-        self.bus = smbus2.SMBus(1)
+        self.lc.setZeroOffset(self.cals['loadcell']['zero'])
+        self.lc.setCalibrationFactor(self.cals['loadcell']['zero'])
+
+        self.bus_pt = smbus2.SMBus(3)  # I2C-3 for pressure tap
+        self.pt = PyNAU7802.NAU7802()
+
+        if not self.pt.begin(self.bus_pt):
+            raise RuntimeError("Failed to initialize NAU7802 for pressure tap!")
 
         # Create the scale and initialize it
         self.lc = PyNAU7802.NAU7802()
         if not self.lc.begin(self.bus):
             self.lc = None        
-        self.lc.setZeroOffset(self.cals['loadcell']['zero'])
-        self.lc.setCalibrationFactor(self.cals['loadcell']['zero'])
-        # END LOAD CELL STUFF -  also see get_loadcell
-        # Change calibration factor to something random. Get + record data with reference weight.
-        # Restart load cell breakout. Verify data is identical after restart
 
         self.outbound = None
         self.filename = None
@@ -162,10 +159,9 @@ class DAQController():
                     pt_data = []
 
     def get_loadcell(self):
-        if self.lc is not None:
+        with self.measurement_lock:
             return self.lc.getWeight()
-        
-        return -1.0
 
     def get_pressuretap(self):
-        return round((self.chan.value - self.cals['pressuretap']['zero']) / self.cals['pressuretap']['cal'], 4)
+        with self.measurement_lock:
+            return round((self.pt.getWeight() - self.cals['pressuretap']['zero']) / self.cals['pressuretap']['cal'], 4)
